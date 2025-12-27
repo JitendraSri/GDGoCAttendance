@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Attendance Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+</head>
+
+<body>
+    <header>
+        <div class="header-content">
+            <div class="logos" style="display: flex; gap: 10px; align-items: center; margin-right: 1rem;">
+                <img src="/static/logos/1.png" alt="Logo 1" class="logo" style="height: 50px;">
+                <img src="/static/logos/2.jpg" alt="Logo 2" class="logo" style="height: 50px;">
+            </div>
+            <h1>Attendance Dashboard</h1>
+            <a href="/logout" class="btn-secondary">Logout</a>
+        </div>
+    </header>
+
+    <main>
+        <div class="top-controls">
+            <div class="card scanner-card">
+                <h2>Scan QR Code</h2>
+                <div id="reader" width="600px"></div>
+                <div class="manual-entry">
+                    <input type="text" id="manualRollInput" placeholder="Enter Roll Number Manually">
+                    <button onclick="handleManualEntry()" class="btn-primary">Submit</button>
+                </div>
+                <div id="scanResult" class="scan-result"></div>
+            </div>
+
+            <div class="card stats-card">
+                <h2>Live Statistics</h2>
+                <div class="stats-row" style="display: flex; justify-content: space-around; margin-bottom: 1.5rem;">
+                    <div class="total-count">
+                        <h3>Registered</h3>
+                        <div id="totalStudents" class="count-number" style="color: #5f6368;">0</div>
+                    </div>
+                    <div class="total-count">
+                        <h3>Present Today</h3>
+                        <div id="totalCount" class="count-number">0</div>
+                    </div>
+                </div>
+                <div class="branch-grid" id="branchGrid">
+                    <!-- Branch counts will be populated here -->
+                </div>
+            </div>
+
+
+        </div>
+
+        <div id="deleteResult" class="scan-result"></div>
+        </div>
+        </div>
+
+        <div class="downloads-section">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2 style="margin: 0;">Reports & Lists</h2>
+                <div style="display: flex; gap: 10px;">
+                    <a href="/download_full_excel" class="btn-primary"
+                        style="background-color: #0F9D58; text-decoration: none; display: flex; align-items: center; justify-content: center;">Download
+                        Full Data</a>
+                    <button onclick="openViewListModal()" class="btn-primary" style="background-color: #202124;">View
+                        Attendees List</button>
+                </div>
+            </div>
+
+            <div class="buttons-grid">
+                <a href="/download_pdf/CSE" class="btn-outline">CSE</a>
+                <a href="/download_pdf/ECE" class="btn-outline">ECE</a>
+                <a href="/download_pdf/ECT" class="btn-outline">ECT</a>
+                <a href="/download_pdf/CAI" class="btn-outline">CAI</a>
+                <a href="/download_pdf/AIM" class="btn-outline">AIM</a>
+                <a href="/download_pdf/CSD" class="btn-outline">CSD</a>
+                <a href="/download_pdf/CST" class="btn-outline">CST</a>
+            </div>
+        </div>
+    </main>
+
+    <!-- Add Student Modal -->
+    <div id="addStudentModal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" onclick="closeModal('addStudentModal')">&times;</span>
+            <h2>Add New Student</h2>
+            <p>Roll Number <strong id="modalRollNumber"></strong> not found.</p>
+            <p>Please enter the name to register and mark attendance.</p>
+            <input type="text" id="newStudentName" placeholder="Full Name" />
+            <button onclick="submitNewStudent()" class="btn-primary">Add & Mark Present</button>
+        </div>
+    </div>
+
+    <!-- View List Modal -->
+    <div id="viewListModal" class="modal">
+        <div class="modal-content" style="max-width: 800px; max-height: 90vh; overflow-y: auto;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                <h2 style="margin: 0;">Attendees List</h2>
+                <span class="close-modal" onclick="closeModal('viewListModal')">&times;</span>
+            </div>
+
+            <div class="tabs"
+                style="margin-bottom: 1rem; border-bottom: 1px solid #dadce0; display: flex; gap: 1rem; overflow-x: auto;">
+                <button class="tab-btn active" onclick="filterList('ALL')">ALL</button>
+                <button class="tab-btn" onclick="filterList('CSE')">CSE</button>
+                <button class="tab-btn" onclick="filterList('ECE')">ECE</button>
+                <button class="tab-btn" onclick="filterList('ECT')">ECT</button>
+                <button class="tab-btn" onclick="filterList('CAI')">CAI</button>
+                <button class="tab-btn" onclick="filterList('AIM')">AIM</button>
+                <button class="tab-btn" onclick="filterList('CSD')">CSD</button>
+                <button class="tab-btn" onclick="filterList('CST')">CST</button>
+            </div>
+
+            <div style="text-align: right; margin-bottom: 0.5rem;">
+                <a id="downloadCurrentPdf" href="#" class="btn-outline" style="font-size: 0.9rem;">Download PDF</a>
+            </div>
+
+            <table id="attendeesTable" style="width: 100%; border-collapse: collapse;">
+                <thead>
+                    <tr style="background: #f1f3f4; text-align: left;">
+                        <th style="padding: 0.5rem; border-bottom: 1px solid #dadce0;">S.No</th>
+                        <th style="padding: 0.5rem; border-bottom: 1px solid #dadce0;">Roll Number</th>
+                        <th style="padding: 0.5rem; border-bottom: 1px solid #dadce0;">Name</th>
+                        <th style="padding: 0.5rem; border-bottom: 1px solid #dadce0;">Branch</th>
+                        <th style="padding: 0.5rem; border-bottom: 1px solid #dadce0;">Action</th>
+                    </tr>
+                </thead>
+                <tbody id="attendeesTableBody">
+                    <!-- Rows -->
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script src="/static/js/main.js"></script>
+    <br><br>
+    <footer class="site-footer">
+        &copy; GDGoC Attendance System | Jitendra Sri
+    </footer>
+</body>
+
+</html>
