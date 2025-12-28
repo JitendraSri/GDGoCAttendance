@@ -1,5 +1,6 @@
 Flask
-flask-socketio
+Flask-SocketIO
 pymongo
 python-dotenv
 reportlab
+dnspython
