@@ -386,10 +386,5 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Index creation failed: {e}")
         
-    # Run server on 0.0.0.0 to allow mobile connections
-    # Use PORT from environment (Render requirement) or default to 5000 for local
-    port = int(os.environ.get('PORT', 5000))
-    try:
-        socketio.run(app, host='0.0.0.0', debug=False, use_reloader=False, port=port)
-    except Exception as e:
-        print(f"Server Error: {e}")
+    port = int(os.environ.get("PORT", 5000))
+    socketio.run(app, host="0.0.0.0", port=port)
