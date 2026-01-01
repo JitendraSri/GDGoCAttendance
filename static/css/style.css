@@ -12,12 +12,17 @@ header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    /* Allow wrapping for mobile */
+    gap: 1rem;
 }
 
 .header-content {
     display: flex;
     align-items: center;
-    width: 100%;
+    flex-grow: 1;
+    min-width: 250px;
+    /* Base width for branding */
 }
 
 .logo {
@@ -211,16 +216,22 @@ main {
     width: 100%;
     height: 100%;
     background-color: rgba(0, 0, 0, 0.5);
+    overflow-y: auto;
+    /* Allow entire background to scroll */
+    padding: 1rem;
+    box-sizing: border-box;
 }
 
 .modal-content {
     background-color: white;
-    margin: 15% auto;
+    margin: 2rem auto;
+    /* Consistent margin for scrolling */
     padding: 2rem;
     border-radius: 8px;
-    width: 90%;
-    max-width: 400px;
+    width: 100%;
+    max-width: 600px;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    position: relative;
 }
 
 .close-modal {
@@ -267,11 +278,40 @@ main {
 /* Mobile Optimizations */
 @media (max-width: 768px) {
     header {
-        padding: 0.75rem 1rem;
+        padding: 1rem;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+
+    .header-content {
+        justify-content: center;
+        margin-bottom: 0.5rem;
+    }
+
+    .header-actions {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
+        align-items: center;
+    }
+
+    .header-actions .event-dropdown,
+    .header-actions .btn-secondary {
+        width: 100%;
+        max-width: 300px;
+        box-sizing: border-box;
+        text-align: center;
     }
 
     h1 {
         font-size: 1.2rem;
+    }
+
+    .logo {
+        height: 30px;
+        margin-right: 0.5rem;
     }
 
     main {
@@ -280,40 +320,31 @@ main {
 
     .top-controls {
         grid-template-columns: 1fr;
-        gap: 1rem;
+        gap: 1.5rem;
     }
 
     .card {
-        padding: 1rem;
+        padding: 1.25rem 1rem;
+    }
+
+    .count-number {
+        font-size: 2.25rem;
     }
 
     .branch-grid {
-        grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
-        gap: 0.5rem;
+        grid-template-columns: repeat(auto-fill, minmax(65px, 1fr));
+        gap: 0.75rem;
     }
 
     .branch-count {
         font-size: 1rem;
     }
 
-    .branch-name {
-        font-size: 0.75rem;
-    }
-
-    .modal-content {
-        margin: 10% auto;
-        padding: 1.5rem;
-        width: 95%;
-    }
-
     .btn-outline {
+        padding: 0.5rem 1rem;
+        font-size: 0.85rem;
         flex: 1 1 auto;
         text-align: center;
-        padding: 0.5rem 1rem;
-    }
-
-    .buttons-grid {
-        gap: 0.5rem;
     }
 }
 
@@ -334,4 +365,33 @@ main {
 body {
     padding-bottom: 60px;
     /* Space for footer */
+}
+
+.event-dropdown {
+    padding: 0.5rem;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    color: #202124;
+    background-color: #f8f9fa;
+    cursor: pointer;
+    min-width: 150px;
+}
+
+.event-dropdown:focus {
+    outline: none;
+    border-color: #1a73e8;
+    background-color: white;
+}
+
+.event-creation input,
+.excel-upload select {
+    padding: 0.5rem;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    font-size: 1rem;
+}
+
+.excel-upload h3 {
+    margin-top: 0;
 }

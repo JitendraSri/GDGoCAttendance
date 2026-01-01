@@ -4,6 +4,7 @@ from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
 from flask_socketio import SocketIO, emit
 from pymongo import MongoClient
+from bson import ObjectId
 from dotenv import load_dotenv
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -31,9 +32,20 @@ except:
     db = client['attendance_db'] # Fallback if URI doesn't validly specify one
 students_col = db['students']
 attendance_col = db['attendance']
+events_col = db['events']
+admins_col = db['admins']
 
 # Initialize SocketIO
 socketio = SocketIO(app, async_mode='threading')
+
+from functools import wraps
+def requires_super_admin(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('logged_in') or session.get('username') != 'GDGADMIN':
+            return jsonify({'error': 'Unauthorized: Only GDGADMIN can perform this action'}), 403
+        return f(*args, **kwargs)
+    return decorated
 
 # Branch Mapping
 BRANCH_MAP = {
@@ -64,13 +76,58 @@ def index():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        if username == ADMIN_USERNAME and password == ADMIN_PASSWORD:
+        username = request.form.get('username').strip()
+        password = request.form.get('password').strip()
+        
+        # Priority: Check database for admins
+        admin = admins_col.find_one({'username': username, 'password': password})
+        if admin:
             session['logged_in'] = True
+            session['admin_id'] = str(admin['_id'])
+            session['username'] = username
             return redirect(url_for('dashboard'))
+                
         return render_template('login.html', error="Invalid Credentials")
     return render_template('login.html')
+
+@app.route('/api/admins', methods=['GET', 'POST'])
+@requires_super_admin
+def admins_api():
+    if request.method == 'GET':
+        admins = list(admins_col.find({}, {'password': 0})) # Don't send passwords
+        for a in admins:
+            a['_id'] = str(a['_id'])
+        return jsonify(admins)
+        
+    if request.method == 'POST':
+        data = request.json
+        username = data.get('username')
+        password = data.get('password')
+        if not username or not password:
+            return jsonify({'error': 'Username and Password required'}), 400
+            
+        if admins_col.find_one({'username': username}):
+            return jsonify({'error': 'Username already exists'}), 400
+            
+        admins_col.insert_one({'username': username, 'password': password})
+        return jsonify({'status': 'SUCCESS'})
+
+@app.route('/api/admins/<admin_id>', methods=['DELETE'])
+@requires_super_admin
+def delete_admin_api(admin_id):
+    # Prevet self-deletion
+    if session.get('admin_id') == admin_id:
+        return jsonify({'error': 'You cannot delete yourself'}), 400
+        
+    # Prevent deleting the core GDGADMIN via API if possible
+    admin_to_del = admins_col.find_one({'_id': ObjectId(admin_id)})
+    if admin_to_del and admin_to_del.get('username') == 'GDGADMIN':
+        return jsonify({'error': 'GDGADMIN cannot be deleted'}), 400
+        
+    res = admins_col.delete_one({'_id': ObjectId(admin_id)})
+    if res.deleted_count > 0:
+        return jsonify({'status': 'SUCCESS'})
+    return jsonify({'error': 'Admin not found'}), 404
 
 @app.route('/dashboard')
 def dashboard():
@@ -90,51 +147,149 @@ def mark_attendance_api():
 
     data = request.json
     roll_number = data.get('roll_number')
-    if not roll_number:
-        return jsonify({'error': 'Roll number required'}), 400
+    event_id = data.get('event_id')
+    
+    if not roll_number or not event_id:
+        return jsonify({'error': 'Roll number and Event ID required'}), 400
 
     roll_number = roll_number.upper().strip()
     
-    print(f"DEBUG: Mark Attendance Request for {roll_number}")
-    
     # Validation logic
     if len(roll_number) < 8:
-         print("DEBUG: Invalid Length")
          return jsonify({'error': 'Invalid Roll Number format'}), 400
          
     branch = detect_branch(roll_number)
     today = get_today_str()
 
-    # Check for duplicate
-    existing = attendance_col.find_one({'rollNumber': roll_number, 'date': today})
+    # Check for duplicate in this event
+    existing = attendance_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
     if existing:
-        print("DEBUG: Duplicate Found")
         return jsonify({'error': 'Duplicate attendance', 'already_marked': True}), 409
 
-    # Check existence in students collection
-    student = students_col.find_one({'rollNumber': roll_number})
+    # Check existence in students collection for this event
+    student = students_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
     
     if not student:
-        print("DEBUG: Student NOT FOUND in students collection")
         # Not found -> prompt to add
         return jsonify({'status': 'NOT_FOUND', 'roll_number': roll_number}), 404
     
     # Mark attendance
-    print(f"DEBUG: Found Student {student.get('name')}. Marking Present.")
     attendance_record = {
         'rollNumber': roll_number,
         'name': student.get('name', 'Unknown'),
         'branch': student.get('branch', branch),
         'date': today,
+        'eventId': event_id,
         'timestamp': datetime.now()
     }
-    result = attendance_col.insert_one(attendance_record)
-    print(f"DEBUG: Inserted Result ID: {result.inserted_id}")
+    attendance_col.insert_one(attendance_record)
     
     # Emit update
-    emit_counts()
+    emit_counts(event_id)
     
     return jsonify({'status': 'SUCCESS', 'name': student.get('name'), 'branch': student.get('branch')})
+
+@app.route('/api/events', methods=['GET', 'POST'])
+def events_api():
+    if not session.get('logged_in'):
+        return jsonify({'error': 'Unauthorized'}), 401
+        
+    if request.method == 'GET':
+        events = list(events_col.find().sort('created_at', -1))
+        for e in events:
+            e['_id'] = str(e['_id'])
+        return jsonify(events)
+        
+    if request.method == 'POST':
+        # Check for super admin
+        if session.get('username') != 'GDGADMIN':
+            return jsonify({'error': 'Only GDGADMIN can create events'}), 403
+            
+        data = request.json
+        name = data.get('name')
+        if not name:
+            return jsonify({'error': 'Event name required'}), 400
+            
+        event = {
+            'name': name,
+            'created_at': datetime.now()
+        }
+        res = events_col.insert_one(event)
+        return jsonify({'status': 'SUCCESS', 'event_id': str(res.inserted_id)})
+
+@app.route('/api/events/<event_id>', methods=['DELETE'])
+@requires_super_admin
+def delete_event_api(event_id):
+    try:
+        # Cascade delete
+        # 1. Delete Students
+        students_col.delete_many({'eventId': event_id})
+        # 2. Delete Attendance
+        attendance_col.delete_many({'eventId': event_id})
+        # 3. Delete Event
+        res = events_col.delete_one({'_id': ObjectId(event_id)})
+        
+        if res.deleted_count > 0:
+            return jsonify({'status': 'SUCCESS', 'message': f'Event {event_id} and all associated data deleted.'})
+        else:
+            return jsonify({'error': 'Event not found'}), 404
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/upload_students', methods=['POST'])
+@requires_super_admin
+def upload_students():
+    # File handling logic...
+        
+    event_id = request.form.get('event_id')
+    if not event_id:
+        return jsonify({'error': 'No event selected'}), 400
+        
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+        
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+        
+    if file and (file.filename.endswith('.xlsx') or file.filename.endswith('.xls')):
+        try:
+            df = pd.read_excel(file)
+            # Normalize column names
+            df.columns = [str(c).strip().title() for c in df.columns]
+            
+            required = ['Roll Number', 'Name']
+            if not all(c in df.columns for c in required):
+                return jsonify({'error': f'Excel must contain: {", ".join(required)}'}), 400
+                
+            student_records = []
+            for _, row in df.iterrows():
+                roll = str(row['Roll Number']).upper().strip()
+                name = str(row['Name']).strip()
+                branch = str(row.get('Branch', detect_branch(roll))).strip().upper()
+                
+                student_records.append({
+                    'rollNumber': roll,
+                    'name': name,
+                    'branch': branch,
+                    'eventId': event_id
+                })
+            
+            if student_records:
+                # Remove old records for this event if re-uploading? 
+                # For now just insert/upsert.
+                for s in student_records:
+                    students_col.update_one(
+                        {'rollNumber': s['rollNumber'], 'eventId': event_id},
+                        {'$set': s},
+                        upsert=True
+                    )
+                    
+            return jsonify({'status': 'SUCCESS', 'count': len(student_records)})
+        except Exception as e:
+            return jsonify({'error': f'Parsing error: {str(e)}'}), 500
+            
+    return jsonify({'error': 'Invalid file format'}), 400
 
 @app.route('/api/add_student', methods=['POST'])
 def add_student_api():
@@ -142,42 +297,36 @@ def add_student_api():
         return jsonify({'error': 'Unauthorized'}), 401
 
     data = request.json
-    print(f"DEBUG: Add Student Request: {data}")
     roll_number = data.get('roll_number')
     name = data.get('name')
+    event_id = data.get('event_id')
     
-    if not roll_number or not name:
-        return jsonify({'error': 'Roll number and Name required'}), 400
+    if not roll_number or not name or not event_id:
+        return jsonify({'error': 'Roll number, Name and Event ID required'}), 400
         
     roll_number = roll_number.upper().strip()
     branch = detect_branch(roll_number)
     
     # Insert to students
-    res_s = students_col.update_one(
-        {'rollNumber': roll_number},
+    students_col.update_one(
+        {'rollNumber': roll_number, 'eventId': event_id},
         {'$set': {'name': name, 'branch': branch}},
         upsert=True
     )
-    print(f"DEBUG: Update/Upsert Student. Matched: {res_s.matched_count}, Modified: {res_s.modified_count}, Upserted: {res_s.upserted_id}")
     
     # Automatically mark attendance
     today = get_today_str()
-    existing = attendance_col.find_one({'rollNumber': roll_number, 'date': today})
-    if not existing:
-        attendance_record = {
-            'rollNumber': roll_number,
-            'name': name,
-            'branch': branch,
-            'date': today,
-            'timestamp': datetime.now()
-        }
-        res_a = attendance_col.insert_one(attendance_record)
-        print(f"DEBUG: Auto-Marked Attendance. ID: {res_a.inserted_id}")
-        emit_counts()
-        return jsonify({'status': 'SUCCESS', 'message': 'Student added and attendance marked'})
-    else:
-        print("DEBUG: Attendance already existed during Add Student.")
-        return jsonify({'status': 'SUCCESS', 'message': 'Student added, attendance was already marked'})
+    attendance_record = {
+        'rollNumber': roll_number,
+        'name': name,
+        'branch': branch,
+        'date': today,
+        'eventId': event_id,
+        'timestamp': datetime.now()
+    }
+    attendance_col.insert_one(attendance_record)
+    emit_counts(event_id)
+    return jsonify({'status': 'SUCCESS', 'message': 'Student added and attendance marked'})
 
 @app.route('/api/delete_student', methods=['POST'])
 def delete_student_api():
@@ -187,36 +336,25 @@ def delete_student_api():
     
         data = request.json
         roll_number = data.get('roll_number')
+        event_id = data.get('event_id')
         
-        if not roll_number:
-            return jsonify({'error': 'Roll number required'}), 400
+        if not roll_number or not event_id:
+            return jsonify({'error': 'Roll number and Event ID required'}), 400
             
-        # Force string conversion to handle potential numbers
         roll_number = str(roll_number).upper().strip()
         
-        print(f"DEBUG: Delete Request for '{roll_number}' (Len: {len(roll_number)})")
-    
-        # Check existence before delete for debugging
-        ex_s = students_col.find_one({'rollNumber': roll_number})
-        ex_a = attendance_col.find_one({'rollNumber': roll_number})
-        print(f"DEBUG: Pre-check - Student: {ex_s['_id'] if ex_s else 'NONE'}, Attendance: {ex_a['_id'] if ex_a else 'NONE'}")
-    
         # Delete from students
-        res_s = students_col.delete_one({'rollNumber': roll_number})
+        res_s = students_col.delete_one({'rollNumber': roll_number, 'eventId': event_id})
         # Delete from attendance
-        res_a = attendance_col.delete_many({'rollNumber': roll_number})
-        
-        print(f"DEBUG: Deleted Student: {res_s.deleted_count}, Attendance: {res_a.deleted_count}")
+        res_a = attendance_col.delete_many({'rollNumber': roll_number, 'eventId': event_id})
         
         if res_s.deleted_count > 0 or res_a.deleted_count > 0:
-            emit_counts()
-            return jsonify({'status': 'SUCCESS', 'message': f'Deleted {roll_number}. Student: {res_s.deleted_count}, Attendance: {res_a.deleted_count}'})
+            emit_counts(event_id)
+            return jsonify({'status': 'SUCCESS', 'message': f'Deleted {roll_number}'})
         else:
-            return jsonify({'status': 'NOT_FOUND', 'message': f'Roll number {roll_number} not found'}), 404
+            return jsonify({'status': 'NOT_FOUND', 'message': f'Roll number {roll_number} not found in this event'}), 404
             
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         return jsonify({'error': f'Internal Server Error: {str(e)}'}), 500
 
 @app.route('/api/attendees')
@@ -224,15 +362,17 @@ def get_attendees():
     if not session.get('logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
     
+    event_id = request.args.get('event_id')
     branch = request.args.get('branch')
-    today = get_today_str()
-    query = {'date': today}
     
+    if not event_id:
+        return jsonify({'error': 'Event ID required'}), 400
+        
+    query = {'eventId': event_id}
     if branch and branch != 'ALL':
         query['branch'] = branch.upper()
         
     records = list(attendance_col.find(query))
-    # Transform for frontend
     result = []
     for idx, r in enumerate(records, 1):
         result.append({
@@ -241,63 +381,64 @@ def get_attendees():
             'name': r.get('name'),
             'branch': r.get('branch')
         })
-        
     return jsonify(result)
 
 @app.route('/api/stats')
 def get_stats():
     if not session.get('logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
-    today = get_today_str()
-    total = attendance_col.count_documents({'date': today})
+    
+    event_id = request.args.get('event_id')
+    if not event_id:
+        return jsonify({'total': 0, 'branch_counts': {}, 'total_students': 0})
+        
+    total = attendance_col.count_documents({'eventId': event_id})
     pipeline = [
-        {'$match': {'date': today}},
+        {'$match': {'eventId': event_id}},
         {'$group': {'_id': '$branch', 'count': {'$sum': 1}}}
     ]
     branch_counts = {item['_id']: item['count'] for item in attendance_col.aggregate(pipeline)}
-    # Ensure all departments are in the map
     for dept in BRANCH_MAP.values():
         if dept not in branch_counts:
             branch_counts[dept] = 0
             
-    total_students = students_col.count_documents({})
+    total_students = students_col.count_documents({'eventId': event_id})
     return jsonify({'total': total, 'branch_counts': branch_counts, 'total_students': total_students})
 
-def emit_counts():
-    today = get_today_str()
-    total = attendance_col.count_documents({'date': today})
+def emit_counts(event_id):
+    total = attendance_col.count_documents({'eventId': event_id})
     pipeline = [
-        {'$match': {'date': today}},
+        {'$match': {'eventId': event_id}},
         {'$group': {'_id': '$branch', 'count': {'$sum': 1}}}
     ]
     branch_counts = {item['_id']: item['count'] for item in attendance_col.aggregate(pipeline)}
-     # Ensure all departments are in the map
     for dept in BRANCH_MAP.values():
         if dept not in branch_counts:
             branch_counts[dept] = 0
             
-    total_students = students_col.count_documents({})
+    total_students = students_col.count_documents({'eventId': event_id})
     try:
         socketio.emit('update_counts', {
             'total': total, 
             'branch_counts': branch_counts,
-            'total_students': total_students
+            'total_students': total_students,
+            'event_id': event_id
         })
     except Exception as e:
         print(f"ERROR: emit_counts failed: {e}")
 
 
-@app.route('/download_pdf/<department>')
-def download_pdf(department):
+@app.route('/download_pdf/<event_id>/<department>')
+def download_pdf(event_id, department):
     if not session.get('logged_in'):
          return redirect(url_for('login'))
          
     department = department.upper()
-    if department not in BRANCH_MAP.values():
-        return "Invalid Department", 400
+    event = events_col.find_one({'_id': ObjectId(event_id)})
+    if not event:
+        return "Invalid Event", 400
         
-    today = get_today_str()
-    records = list(attendance_col.find({'date': today, 'branch': department}))
+    records = list(attendance_col.find({'eventId': event_id, 'branch': department}))
     
     # Generate PDF
     buffer = io.BytesIO()
@@ -308,10 +449,10 @@ def download_pdf(department):
     # Title
     title_style = styles['Title']
     title_style.leading = 24
-    elements.append(Paragraph("ATTENDANCE FOR THE<br/>DEPLOYX Event BY GDGoC SVEC", title_style))
+    elements.append(Paragraph(f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY GDGoC SVEC", title_style))
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Department: {department}", styles['Heading2']))
-    elements.append(Paragraph(f"Date: {today}", styles['Normal']))
+    elements.append(Paragraph(f"Date: {get_today_str()}", styles['Normal']))
     elements.append(Spacer(1, 12))
     
     # Table Data
@@ -335,16 +476,19 @@ def download_pdf(department):
     doc.build(elements)
     buffer.seek(0)
     
-    return send_file(buffer, as_attachment=True, download_name=f"Attendance_{department}_{today}.pdf", mimetype='application/pdf')
+    today_str = get_today_str()
+    return send_file(buffer, as_attachment=True, download_name=f"Attendance_{department}_{today_str}.pdf", mimetype='application/pdf')
 
-@app.route('/download_full_excel')
-def download_full_excel():
+@app.route('/download_full_excel/<event_id>')
+def download_full_excel(event_id):
     if not session.get('logged_in'):
          return redirect(url_for('login'))
     
-    # Fetch only today's attendance records (Present students)
-    today = get_today_str()
-    attendance_records = list(attendance_col.find({'date': today}, {'_id': 0}))
+    event = events_col.find_one({'_id': ObjectId(event_id)})
+    if not event:
+        return "Invalid Event", 400
+        
+    attendance_records = list(attendance_col.find({'eventId': event_id}, {'_id': 0}))
     
     data = []
     for r in attendance_records:
@@ -364,15 +508,32 @@ def download_full_excel():
         
     output.seek(0)
     
-    return send_file(output, as_attachment=True, download_name=f"Full_Student_Data_{today}.xlsx", mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    today_str = get_today_str()
+    return send_file(output, as_attachment=True, download_name=f"Full_Student_Data_{today_str}.xlsx", mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
 
 if __name__ == '__main__':
     # Ensure indexes
     try:
-        attendance_col.create_index([('rollNumber', 1), ('date', 1)], unique=True)
-        attendance_col.create_index('date')
+        attendance_col.create_index([('rollNumber', 1), ('eventId', 1)], unique=True)
+        attendance_col.create_index('eventId')
         attendance_col.create_index('branch')
+        students_col.create_index([('rollNumber', 1), ('eventId', 1)], unique=True)
         print("Indexes ensured.")
+        
+        # Bootstrap required accounts
+        # GDGADMIN (Full access)
+        admins_col.update_one(
+            {'username': 'GDGADMIN'},
+            {'$set': {'username': 'GDGADMIN', 'password': 'COREADMIN#3'}},
+            upsert=True
+        )
+        # GDGMEMBER (Attendance Only)
+        admins_col.update_one(
+            {'username': 'GDGMEMBER'},
+            {'$set': {'username': 'GDGMEMBER', 'password': 'CORETEAM#3'}},
+            upsert=True
+        )
+        print("Default Admins ensured.")
         
         # DEBUG: Print counts
         s_count = students_col.count_documents({})
