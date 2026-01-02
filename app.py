@@ -49,6 +49,7 @@ def requires_super_admin(f):
 
 # Branch Mapping
 BRANCH_MAP = {
+    '02': 'EEE',
     '04': 'ECE',
     '14': 'ECT',
     '43': 'CAI',
@@ -514,6 +515,19 @@ def download_full_excel(event_id):
 if __name__ == '__main__':
     # Ensure indexes
     try:
+        # Drop old single-field unique indexes if they exist
+        try:
+            students_col.drop_index("rollNumber_1")
+            print("Dropped old rollNumber index from students")
+        except:
+            pass
+            
+        try:
+            attendance_col.drop_index("rollNumber_1")
+            print("Dropped old rollNumber index from attendance")
+        except:
+            pass
+
         attendance_col.create_index([('rollNumber', 1), ('eventId', 1)], unique=True)
         attendance_col.create_index('eventId')
         attendance_col.create_index('branch')
