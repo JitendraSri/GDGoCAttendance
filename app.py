@@ -35,8 +35,8 @@ attendance_col = db['attendance']
 events_col = db['events']
 admins_col = db['admins']
 
-# Initialize SocketIO
-socketio = SocketIO(app, async_mode='threading')
+# Initialize SocketIO with better concurrency settings
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
 from functools import wraps
 def requires_super_admin(f):
@@ -59,7 +59,16 @@ BRANCH_MAP = {
     '06': 'CST'
 }
 
+def clean_roll_number(roll):
+    if not roll:
+        return ""
+    s = str(roll).strip().upper()
+    if s.endswith('.0'):
+        s = s[:-2]
+    return s
+
 def detect_branch(roll_number):
+    roll_number = clean_roll_number(roll_number)
     if not roll_number or len(roll_number) < 8:
         return 'UNKNOWN'
     code = roll_number[6:8]
@@ -146,18 +155,15 @@ def mark_attendance_api():
     if not session.get('logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
 
-    data = request.json
-    roll_number = data.get('roll_number')
+    roll_number = clean_roll_number(data.get('roll_number'))
     event_id = data.get('event_id')
     
     if not roll_number or not event_id:
         return jsonify({'error': 'Roll number and Event ID required'}), 400
-
-    roll_number = roll_number.upper().strip()
     
     # Validation logic
     if len(roll_number) < 8:
-         return jsonify({'error': 'Invalid Roll Number format'}), 400
+         return jsonify({'error': 'Roll Number too short'}), 400
          
     branch = detect_branch(roll_number)
     today = get_today_str()
@@ -264,9 +270,27 @@ def upload_students():
                 return jsonify({'error': f'Excel must contain: {", ".join(required)}'}), 400
                 
             student_records = []
+            seen_rolls = set()
+            duplicates_count = 0
+            
             for _, row in df.iterrows():
-                roll = str(row['Roll Number']).upper().strip()
-                name = str(row['Name']).strip()
+                roll_raw = row.get('Roll Number')
+                name_raw = row.get('Name')
+                
+                if pd.isna(roll_raw) or pd.isna(name_raw):
+                    continue
+                    
+                roll = clean_roll_number(roll_raw)
+                
+                if not roll:
+                    continue
+                    
+                if roll in seen_rolls:
+                    duplicates_count += 1
+                    continue
+                    
+                seen_rolls.add(roll)
+                name = str(name_raw).strip()
                 branch = str(row.get('Branch', detect_branch(roll))).strip().upper()
                 
                 student_records.append({
@@ -277,8 +301,6 @@ def upload_students():
                 })
             
             if student_records:
-                # Remove old records for this event if re-uploading? 
-                # For now just insert/upsert.
                 for s in student_records:
                     students_col.update_one(
                         {'rollNumber': s['rollNumber'], 'eventId': event_id},
@@ -286,7 +308,11 @@ def upload_students():
                         upsert=True
                     )
                     
-            return jsonify({'status': 'SUCCESS', 'count': len(student_records)})
+            msg = f"Successfully registered {len(student_records)} students."
+            if duplicates_count > 0:
+                msg += f" (Note: {duplicates_count} duplicate roll numbers were ignored in Excel)"
+                
+            return jsonify({'status': 'SUCCESS', 'count': len(student_records), 'message': msg})
         except Exception as e:
             return jsonify({'error': f'Parsing error: {str(e)}'}), 500
             
@@ -298,14 +324,12 @@ def add_student_api():
         return jsonify({'error': 'Unauthorized'}), 401
 
     data = request.json
-    roll_number = data.get('roll_number')
+    roll_number = clean_roll_number(data.get('roll_number'))
     name = data.get('name')
     event_id = data.get('event_id')
     
     if not roll_number or not name or not event_id:
         return jsonify({'error': 'Roll number, Name and Event ID required'}), 400
-        
-    roll_number = roll_number.upper().strip()
     branch = detect_branch(roll_number)
     
     # Insert to students
@@ -336,13 +360,11 @@ def delete_student_api():
             return jsonify({'error': 'Unauthorized'}), 401
     
         data = request.json
-        roll_number = data.get('roll_number')
+        roll_number = clean_roll_number(data.get('roll_number'))
         event_id = data.get('event_id')
         
         if not roll_number or not event_id:
             return jsonify({'error': 'Roll number and Event ID required'}), 400
-            
-        roll_number = str(roll_number).upper().strip()
         
         # Delete from students
         res_s = students_col.delete_one({'rollNumber': roll_number, 'eventId': event_id})
@@ -406,6 +428,14 @@ def get_stats():
     total_students = students_col.count_documents({'eventId': event_id})
     return jsonify({'total': total, 'branch_counts': branch_counts, 'total_students': total_students})
 
+@socketio.on('join_event')
+def on_join(data):
+    event_id = data.get('event_id')
+    if event_id:
+        from flask_socketio import join_room
+        join_room(event_id)
+        # print(f"Client joined room: {event_id}")
+
 def emit_counts(event_id):
     total = attendance_col.count_documents({'eventId': event_id})
     pipeline = [
@@ -419,12 +449,13 @@ def emit_counts(event_id):
             
     total_students = students_col.count_documents({'eventId': event_id})
     try:
+        # Emit ONLY to the specific event room
         socketio.emit('update_counts', {
             'total': total, 
             'branch_counts': branch_counts,
             'total_students': total_students,
             'event_id': event_id
-        })
+        }, to=event_id)
     except Exception as e:
         print(f"ERROR: emit_counts failed: {e}")
 
@@ -439,7 +470,11 @@ def download_pdf(event_id, department):
     if not event:
         return "Invalid Event", 400
         
-    records = list(attendance_col.find({'eventId': event_id, 'branch': department}))
+    query = {'eventId': event_id}
+    if department != 'ALL':
+        query['branch'] = department
+        
+    records = list(attendance_col.find(query).sort('timestamp', 1))
     
     # Generate PDF
     buffer = io.BytesIO()
@@ -450,26 +485,39 @@ def download_pdf(event_id, department):
     # Title
     title_style = styles['Title']
     title_style.leading = 24
-    elements.append(Paragraph(f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY GDGoC SVEC", title_style))
+    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY GDGoC SVEC"
+    elements.append(Paragraph(header_text, title_style))
     elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"Department: {department}", styles['Heading2']))
+    elements.append(Paragraph(f"Category: {'All Branches' if department == 'ALL' else department}", styles['Heading2']))
     elements.append(Paragraph(f"Date: {get_today_str()}", styles['Normal']))
+    elements.append(Paragraph(f"Total Students: {len(records)}", styles['Normal']))
     elements.append(Spacer(1, 12))
     
     # Table Data
-    data = [['S.No', 'Roll Number', 'Name']]
-    for idx, record in enumerate(records, 1):
-        data.append([str(idx), record.get('rollNumber', ''), record.get('name', '')])
+    data = [['S.No', 'Roll Number', 'Name', 'Branch' if department == 'ALL' else '']]
+    if department != 'ALL':
+        data = [['S.No', 'Roll Number', 'Name']]
         
-    # Set column widths to make table BIG (Total ~500pts)
-    table = Table(data, colWidths=[50, 150, 300])
+    for idx, record in enumerate(records, 1):
+        if department == 'ALL':
+            data.append([str(idx), record.get('rollNumber', ''), record.get('name', ''), record.get('branch', '')])
+        else:
+            data.append([str(idx), record.get('rollNumber', ''), record.get('name', '')])
+        
+    # Set column widths
+    col_widths = [50, 150, 300]
+    if department == 'ALL':
+        col_widths = [40, 120, 240, 100]
+        
+    table = Table(data, colWidths=col_widths)
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
         ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
         ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
         ('GRID', (0, 0), (-1, -1), 1, colors.black)
     ]))
     elements.append(table)
@@ -478,7 +526,8 @@ def download_pdf(event_id, department):
     buffer.seek(0)
     
     today_str = get_today_str()
-    return send_file(buffer, as_attachment=True, download_name=f"Attendance_{department}_{today_str}.pdf", mimetype='application/pdf')
+    filename = f"Attendance_{department}_{today_str}.pdf"
+    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
 @app.route('/download_full_excel/<event_id>')
 def download_full_excel(event_id):

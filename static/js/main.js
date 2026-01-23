@@ -107,6 +107,9 @@ function handleEventChange() {
     localStorage.setItem('selectedEventId', currentEventId);
 
     if (currentEventId) {
+        // Join the specific room for this event to receive real-time updates
+        socket.emit('join_event', { event_id: currentEventId });
+
         refreshStats();
         updateDownloadLinks();
         // If attendees list modal is open, refresh it
@@ -158,13 +161,15 @@ function resetStats() {
         btn.style.pointerEvents = 'none';
     });
     document.getElementById('downloadExcelLink').href = '#';
+    document.getElementById('downloadPdfLink').href = '#';
 }
 
 function updateDownloadLinks() {
     if (!currentEventId) return;
 
-    // Update Excel link
+    // Update buttons link
     document.getElementById('downloadExcelLink').href = `/download_full_excel/${currentEventId}`;
+    document.getElementById('downloadPdfLink').href = `/download_pdf/${currentEventId}/ALL`;
 
     // Update PDF buttons
     document.querySelectorAll('.branch-pdf-btn').forEach(btn => {
@@ -233,7 +238,7 @@ function handleExcelUpload() {
         .then(res => res.json())
         .then(data => {
             if (data.status === 'SUCCESS') {
-                statusDiv.innerText = `Successfully registered ${data.count} students!`;
+                statusDiv.innerText = data.message || `Successfully registered ${data.count} students!`;
                 statusDiv.style.color = "green";
                 fileInput.value = '';
                 if (eventId === currentEventId) refreshStats();
