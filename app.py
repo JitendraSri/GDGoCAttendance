@@ -155,6 +155,10 @@ def mark_attendance_api():
     if not session.get('logged_in'):
         return jsonify({'error': 'Unauthorized'}), 401
 
+    data = request.json
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
     roll_number = clean_roll_number(data.get('roll_number'))
     event_id = data.get('event_id')
     
@@ -168,33 +172,37 @@ def mark_attendance_api():
     branch = detect_branch(roll_number)
     today = get_today_str()
 
-    # Check for duplicate in this event
-    existing = attendance_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
-    if existing:
-        return jsonify({'error': 'Duplicate attendance', 'already_marked': True}), 409
+    try:
+        # Check for duplicate in this event
+        existing = attendance_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
+        if existing:
+            return jsonify({'error': 'Duplicate attendance', 'already_marked': True}), 409
 
-    # Check existence in students collection for this event
-    student = students_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
-    
-    if not student:
-        # Not found -> prompt to add
-        return jsonify({'status': 'NOT_FOUND', 'roll_number': roll_number}), 404
-    
-    # Mark attendance
-    attendance_record = {
-        'rollNumber': roll_number,
-        'name': student.get('name', 'Unknown'),
-        'branch': student.get('branch', branch),
-        'date': today,
-        'eventId': event_id,
-        'timestamp': datetime.now()
-    }
-    attendance_col.insert_one(attendance_record)
-    
-    # Emit update
-    emit_counts(event_id)
-    
-    return jsonify({'status': 'SUCCESS', 'name': student.get('name'), 'branch': student.get('branch')})
+        # Check existence in students collection for this event
+        student = students_col.find_one({'rollNumber': roll_number, 'eventId': event_id})
+        
+        if not student:
+            # Not found -> prompt to add
+            return jsonify({'status': 'NOT_FOUND', 'roll_number': roll_number}), 404
+        
+        # Mark attendance
+        attendance_record = {
+            'rollNumber': roll_number,
+            'name': student.get('name', 'Unknown'),
+            'branch': student.get('branch', branch),
+            'date': today,
+            'eventId': event_id,
+            'timestamp': datetime.now()
+        }
+        attendance_col.insert_one(attendance_record)
+        
+        # Emit update
+        emit_counts(event_id)
+        
+        return jsonify({'status': 'SUCCESS', 'name': student.get('name'), 'branch': student.get('branch')})
+    except Exception as e:
+        print(f"Error in mark_attendance_api: {e}")
+        return jsonify({'error': 'Internal Server Error', 'details': str(e)}), 500
 
 @app.route('/api/events', methods=['GET', 'POST'])
 def events_api():

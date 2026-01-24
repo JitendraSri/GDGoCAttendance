@@ -295,27 +295,34 @@ function markAttendance(rollNumber) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ roll_number: rollNumber, event_id: currentEventId })
     })
-        .then(response => response.json().then(data => ({ status: response.status, body: data })))
-        .then(({ status, body }) => {
-            if (status === 200) {
-                resultDiv.innerText = `Success: ${body.name} (${body.branch})`;
+        .then(async response => {
+            const isJson = response.headers.get('content-type')?.includes('application/json');
+            const data = isJson ? await response.json() : null;
+
+            if (response.ok) {
+                resultDiv.innerText = `Success: ${data.name} (${data.branch})`;
                 resultDiv.className = 'scan-result success';
-            } else if (status === 409) {
+            } else if (response.status === 409) {
                 resultDiv.innerText = `Duplicate: Already marked for this event.`;
                 resultDiv.className = 'scan-result warning';
-            } else if (status === 404) {
+            } else if (response.status === 404) {
                 resultDiv.innerText = `Student not found in this event.`;
                 resultDiv.className = 'scan-result error';
-                openAddStudentModal(body.roll_number);
-            } else {
-                resultDiv.innerText = `Error: ${body.error || 'Unknown error'}`;
+                openAddStudentModal(data ? data.roll_number : rollNumber);
+            } else if (response.status === 401) {
+                resultDiv.innerText = `Error: Session expired. Please login again.`;
                 resultDiv.className = 'scan-result error';
+            } else {
+                const errMsg = data?.error || data?.details || 'Server error';
+                resultDiv.innerText = `Error: ${errMsg}`;
+                resultDiv.className = 'scan-result error';
+                console.error('Attendance API Error:', data);
             }
         })
         .catch(err => {
-            resultDiv.innerText = `Network Error`;
+            resultDiv.innerText = `Connection Error. Check your internet.`;
             resultDiv.className = 'scan-result error';
-            console.error(err);
+            console.error('Fetch Error:', err);
         });
 }
 
