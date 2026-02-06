@@ -493,14 +493,14 @@ def download_pdf(event_id, department):
     # Title
     title_style = styles['Title']
     title_style.leading = 24
-    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY GDGoC SVEC"
+    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY IIC SVEC"
     elements.append(Paragraph(header_text, title_style))
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Category: {'All Branches' if department == 'ALL' else department}", styles['Heading2']))
     elements.append(Paragraph(f"Date: {get_today_str()}", styles['Normal']))
     elements.append(Paragraph(f"Total Students: {len(records)}", styles['Normal']))
     elements.append(Spacer(1, 12))
-    
+   
     # Table Data
     data = [['S.No', 'Roll Number', 'Name', 'Branch' if department == 'ALL' else '']]
     if department != 'ALL':
