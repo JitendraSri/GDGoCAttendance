@@ -417,7 +417,7 @@ def get_attendees():
         
     query = {'eventId': event_id}
     if branch and branch != 'ALL':
-        query['branch'] = branch.upper()
+        query['branch'] = normalize_branch(branch)
         
     records = list(attendance_col.find(query))
     result = []
