@@ -53,11 +53,19 @@ BRANCH_MAP = {
     '04': 'ECE',
     '14': 'ECT',
     '43': 'CAI',
-    '61': 'AIM',
+    '61': 'AIML',
     '44': 'CSD',
     '05': 'CSE',
     '06': 'CST'
 }
+
+def normalize_branch(branch):
+    if not branch:
+        return branch
+    b = str(branch).strip().upper()
+    if b in ('AIM', 'AIML'):
+        return 'AIML'
+    return b
 
 def clean_roll_number(roll):
     if not roll:
@@ -169,7 +177,8 @@ def mark_attendance_api():
     if len(roll_number) < 8:
          return jsonify({'error': 'Roll Number too short'}), 400
          
-    branch = detect_branch(roll_number)
+    branch = normalize_branch(detect_branch(roll_number))
+    branch = normalize_branch(branch)
     today = get_today_str()
 
     try:
@@ -189,7 +198,7 @@ def mark_attendance_api():
         attendance_record = {
             'rollNumber': roll_number,
             'name': student.get('name', 'Unknown'),
-            'branch': student.get('branch', branch),
+            'branch': normalize_branch(student.get('branch', branch)),
             'date': today,
             'eventId': event_id,
             'timestamp': datetime.now()
@@ -235,6 +244,9 @@ def events_api():
 @app.route('/api/events/<event_id>', methods=['DELETE'])
 @requires_super_admin
 def delete_event_api(event_id):
+    # Validate event id early to avoid ObjectId errors
+    if not ObjectId.is_valid(event_id):
+        return jsonify({'error': 'Invalid Event ID'}), 400
     try:
         # Cascade delete
         # 1. Delete Students
@@ -299,7 +311,11 @@ def upload_students():
                     
                 seen_rolls.add(roll)
                 name = str(name_raw).strip()
-                branch = str(row.get('Branch', detect_branch(roll))).strip().upper()
+                raw_branch = row.get('Branch')
+                if pd.isna(raw_branch) or raw_branch is None:
+                    branch = normalize_branch(detect_branch(roll))
+                else:
+                    branch = normalize_branch(str(raw_branch).strip().upper())
                 
                 student_records.append({
                     'rollNumber': roll,
@@ -352,7 +368,7 @@ def add_student_api():
     attendance_record = {
         'rollNumber': roll_number,
         'name': name,
-        'branch': branch,
+        'branch': normalize_branch(branch),
         'date': today,
         'eventId': event_id,
         'timestamp': datetime.now()
@@ -474,6 +490,8 @@ def download_pdf(event_id, department):
          return redirect(url_for('login'))
          
     department = department.upper()
+    if not ObjectId.is_valid(event_id):
+        return "Invalid Event", 400
     event = events_col.find_one({'_id': ObjectId(event_id)})
     if not event:
         return "Invalid Event", 400
@@ -542,6 +560,8 @@ def download_full_excel(event_id):
     if not session.get('logged_in'):
          return redirect(url_for('login'))
     
+    if not ObjectId.is_valid(event_id):
+        return "Invalid Event", 400
     event = events_col.find_one({'_id': ObjectId(event_id)})
     if not event:
         return "Invalid Event", 400
