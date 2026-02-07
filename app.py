@@ -50,6 +50,7 @@ def requires_super_admin(f):
 # Branch Mapping
 BRANCH_MAP = {
     '02': 'EEE',
+    '03': 'MECH',
     '04': 'ECE',
     '14': 'ECT',
     '43': 'CAI',
@@ -354,9 +355,8 @@ def add_student_api():
     
     if not roll_number or not name or not event_id:
         return jsonify({'error': 'Roll number, Name and Event ID required'}), 400
-    branch = detect_branch(roll_number)
-    
-    # Insert to students
+    # Insert to students with normalization
+    branch = normalize_branch(detect_branch(roll_number))
     students_col.update_one(
         {'rollNumber': roll_number, 'eventId': event_id},
         {'$set': {'name': name, 'branch': branch}},
@@ -489,7 +489,7 @@ def download_pdf(event_id, department):
     if not session.get('logged_in'):
          return redirect(url_for('login'))
          
-    department = department.upper()
+    department = normalize_branch(department.upper())
     if not ObjectId.is_valid(event_id):
         return "Invalid Event", 400
     event = events_col.find_one({'_id': ObjectId(event_id)})
@@ -624,6 +624,13 @@ if __name__ == '__main__':
             {'$set': {'username': 'GDGMEMBER', 'password': 'CORETEAM#3'}},
             upsert=True
         )
+        # Merging AIM and AIML into AIML (Normalization)
+        print("Ensuring branch normalization (AIM -> AIML)...")
+        res1 = students_col.update_many({'branch': 'AIM'}, {'$set': {'branch': 'AIML'}})
+        res2 = attendance_col.update_many({'branch': 'AIM'}, {'$set': {'branch': 'AIML'}})
+        if res1.modified_count > 0 or res2.modified_count > 0:
+            print(f"Normalized {res1.modified_count} students and {res2.modified_count} attendance records.")
+        
         print("Default Admins ensured.")
         
         # DEBUG: Print counts
