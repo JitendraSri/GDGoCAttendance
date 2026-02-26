@@ -562,7 +562,7 @@ def download_pdf(event_id, department):
     # Title
     title_style = styles['Title']
     title_style.leading = 24
-    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY IIC SVEC"
+    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>BY SRI VASAVI ENGINEERING COLLEGE"
     elements.append(Paragraph(header_text, title_style))
     elements.append(Spacer(1, 12))
     elements.append(Paragraph(f"Category: {'All Branches' if department == 'ALL' else department}", styles['Heading2']))
