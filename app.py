@@ -15,6 +15,7 @@ import io
 import pandas as pd
 import logging
 from logging.handlers import RotatingFileHandler
+import html
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -72,6 +73,17 @@ def handle_exception(e):
         }), 500
     # Return a basic error message for others
     return render_template('error.html', error=str(e)), 500
+
+@app.errorhandler(404)
+def handle_404(e):
+    logger.warning(f"404 Not Found: {request.path} [Referer: {request.headers.get('Referer')}]")
+    return render_template('error.html', error="Page Not Found"), 404
+
+@app.errorhandler(500)
+def handle_500(e):
+    import traceback
+    logger.error(f"500 Internal Error on {request.path}: {str(e)}\n{traceback.format_exc()}")
+    return render_template('error.html', error="Internal Server Error"), 500
 
 # Branch Mapping
 BRANCH_MAP = {
@@ -536,6 +548,7 @@ def emit_counts(event_id):
 
 
 @app.route('/download_pdf/<event_id>/<department>')
+@requires_super_admin
 def download_pdf(event_id, department):
     if not session.get('logged_in'):
          return redirect(url_for('login'))
@@ -553,60 +566,74 @@ def download_pdf(event_id, department):
         
     records = list(attendance_col.find(query).sort('timestamp', 1))
     
-    # Generate PDF
-    buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=letter)
-    elements = []
-    styles = getSampleStyleSheet()
-    
-    # Title
-    title_style = styles['Title']
-    title_style.leading = 24
-    header_text = f"ATTENDANCE FOR THE<br/>{event['name']}<br/>INITIATED BY<br/>SRI VASAVI ENGINEERING COLLEGE<br>(AUTONOMOUS)"
-    elements.append(Paragraph(header_text, title_style))
-    elements.append(Spacer(1, 12))
-    elements.append(Paragraph(f"Category: {'All Branches' if department == 'ALL' else department}", styles['Heading2']))
-    elements.append(Paragraph(f"Date: {get_today_str()}", styles['Normal']))
-    elements.append(Paragraph(f"Total Students: {len(records)}", styles['Normal']))
-    elements.append(Spacer(1, 12))
-   
-    # Table Data
-    data = [['S.No', 'Roll Number', 'Name', 'Branch' if department == 'ALL' else '']]
-    if department != 'ALL':
-        data = [['S.No', 'Roll Number', 'Name']]
+    try:
+        # Generate PDF
+        buffer = io.BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=letter)
+        elements = []
+        styles = getSampleStyleSheet()
         
-    for idx, record in enumerate(records, 1):
+        # Title
+        title_style = styles['Title']
+        title_style.leading = 24
+        
+        # Escape event name for Paragraph
+        safe_event_name = html.escape(event['name'])
+        # Use proper self-closing tags and ensure no accidental content
+        header_text = f"<para align='center'>ATTENDANCE FOR THE<br/>{safe_event_name}<br/>INITIATED BY<br/>SRI VASAVI ENGINEERING COLLEGE<br/>(AUTONOMOUS)</para>"
+        
+        logger.info(f"Generating PDF for event: {event['name']} ({event_id}), dept: {department}")
+        elements.append(Paragraph(header_text, title_style))
+        elements.append(Spacer(1, 12))
+        
+        safe_dept = html.escape('All Branches' if department == 'ALL' else department)
+        elements.append(Paragraph(f"Category: {safe_dept}", styles['Heading2']))
+        elements.append(Paragraph(f"Date: {get_today_str()}", styles['Normal']))
+        elements.append(Paragraph(f"Total Students: {len(records)}", styles['Normal']))
+        elements.append(Spacer(1, 12))
+       
+        # Table Data
+        data = [['S.No', 'Roll Number', 'Name', 'Branch' if department == 'ALL' else '']]
+        if department != 'ALL':
+            data = [['S.No', 'Roll Number', 'Name']]
+            
+        for idx, record in enumerate(records, 1):
+            if department == 'ALL':
+                data.append([str(idx), record.get('rollNumber', ''), record.get('name', ''), record.get('branch', '')])
+            else:
+                data.append([str(idx), record.get('rollNumber', ''), record.get('name', '')])
+            
+        # Set column widths
+        col_widths = [50, 150, 300]
         if department == 'ALL':
-            data.append([str(idx), record.get('rollNumber', ''), record.get('name', ''), record.get('branch', '')])
-        else:
-            data.append([str(idx), record.get('rollNumber', ''), record.get('name', '')])
+            col_widths = [40, 120, 240, 100]
+            
+        table = Table(data, colWidths=col_widths)
+        table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+            ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
+            ('GRID', (0, 0), (-1, -1), 1, colors.black)
+        ]))
+        elements.append(table)
         
-    # Set column widths
-    col_widths = [50, 150, 300]
-    if department == 'ALL':
-        col_widths = [40, 120, 240, 100]
+        doc.build(elements)
+        buffer.seek(0)
         
-    table = Table(data, colWidths=col_widths)
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.grey),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
-        ('BACKGROUND', (0, 1), (-1, -1), colors.whitesmoke),
-        ('GRID', (0, 0), (-1, -1), 1, colors.black)
-    ]))
-    elements.append(table)
-    
-    doc.build(elements)
-    buffer.seek(0)
-    
-    today_str = get_today_str()
-    filename = f"Attendance_{department}_{today_str}.pdf"
-    return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+        today_str = get_today_str()
+        filename = f"Attendance_{department}_{today_str}.pdf"
+        return send_file(buffer, as_attachment=True, download_name=filename, mimetype='application/pdf')
+    except Exception as e:
+        import traceback
+        logger.error(f"PDF Generation Error for event {event_id}: {str(e)}\n{traceback.format_exc()}")
+        return render_template('error.html', error=f"PDF Error: {str(e)}"), 500
 
 @app.route('/download_full_excel/<event_id>')
+@requires_super_admin
 def download_full_excel(event_id):
     if not session.get('logged_in'):
          return redirect(url_for('login'))

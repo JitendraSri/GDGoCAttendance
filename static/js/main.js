@@ -1,6 +1,15 @@
-const socket = io({ transports: ['websocket'] });
+let socket;
+try {
+    socket = io({ transports: ['websocket'] });
+    console.log("Socket.IO initialized");
+} catch (e) {
+    console.error("Socket.IO failed to initialize:", e);
+    // Dummy socket for safety
+    socket = { on: () => { }, emit: () => { } };
+}
 
 let currentEventId = localStorage.getItem('selectedEventId') || null;
+console.log("Initial currentEventId from localStorage:", currentEventId);
 let currentBranchFilter = 'ALL';
 let html5QrcodeScanner;
 let pendingRollNumber = null;
@@ -49,11 +58,27 @@ function loadEvents() {
 
             // Restore selection if exists
             if (currentEventId) {
-                select.value = currentEventId;
-                handleEventChange();
+                console.log("Found event ID in localStorage, restoring selection:", currentEventId);
+                // Verify the ID actually exists in the loaded events
+                const exists = events.some(e => e._id === currentEventId);
+                if (exists) {
+                    select.value = currentEventId;
+                    handleEventChange();
+                } else {
+                    console.warn("Event ID from localStorage not found in event list. Clearing.");
+                    currentEventId = null;
+                    localStorage.removeItem('selectedEventId');
+                    resetStats();
+                }
+            } else {
+                console.log("No event ID found in localStorage.");
+                resetStats();
             }
         })
-        .catch(err => console.error('Error loading events:', err));
+        .catch(err => {
+            console.error('Error loading events:', err);
+            resetStats();
+        });
 }
 
 function handleRemoveEventButtonClick() {
@@ -104,10 +129,11 @@ function deleteEvent(eventId, eventName) {
 function handleEventChange() {
     const select = document.getElementById('eventSelect');
     currentEventId = select.value;
+    console.log("Event changed to:", currentEventId);
     localStorage.setItem('selectedEventId', currentEventId);
 
     if (currentEventId) {
-        // Join the specific room for this event to receive real-time updates
+        console.log("Connecting to event room:", currentEventId);
         socket.emit('join_event', { event_id: currentEventId });
 
         refreshStats();
@@ -117,6 +143,7 @@ function handleEventChange() {
             filterList(currentBranchFilter);
         }
     } else {
+        console.log("No event selected, resetting UI");
         resetStats();
     }
 }
@@ -159,25 +186,64 @@ function resetStats() {
         btn.href = '#';
         btn.style.opacity = '0.5';
         btn.style.pointerEvents = 'none';
+        btn.classList.add('disabled');
     });
-    document.getElementById('downloadExcelLink').href = '#';
-    document.getElementById('downloadPdfLink').href = '#';
+    const excelLink = document.getElementById('downloadExcelLink');
+    if (excelLink) {
+        excelLink.href = '#';
+        excelLink.style.opacity = '0.5';
+        excelLink.style.pointerEvents = 'none';
+    }
+    const pdfLink = document.getElementById('downloadPdfLink');
+    if (pdfLink) {
+        pdfLink.href = '#';
+        pdfLink.style.opacity = '0.5';
+        pdfLink.style.pointerEvents = 'none';
+    }
 }
 
 function updateDownloadLinks() {
-    if (!currentEventId) return;
+    if (!currentEventId) {
+        resetStats();
+        return;
+    }
 
     // Update buttons link
-    document.getElementById('downloadExcelLink').href = `/download_full_excel/${currentEventId}`;
-    document.getElementById('downloadPdfLink').href = `/download_pdf/${currentEventId}/ALL`;
+    const excelLink = document.getElementById('downloadExcelLink');
+    const pdfLink = document.getElementById('downloadPdfLink');
+
+    if (excelLink) {
+        excelLink.href = `/download_full_excel/${currentEventId}`;
+        excelLink.style.opacity = '1';
+        excelLink.style.pointerEvents = 'auto';
+    }
+
+    if (pdfLink) {
+        pdfLink.href = `/download_pdf/${currentEventId}/ALL`;
+        pdfLink.style.opacity = '1';
+        pdfLink.style.pointerEvents = 'auto';
+    }
 
     // Update PDF buttons
     document.querySelectorAll('.branch-pdf-btn').forEach(btn => {
         const branch = btn.getAttribute('data-branch');
-        btn.href = `/download_pdf/${currentEventId}/${branch}`;
-        btn.style.opacity = '1';
-        btn.style.pointerEvents = 'auto';
+        if (branch) {
+            btn.href = `/download_pdf/${currentEventId}/${branch}`;
+            btn.style.opacity = '1';
+            btn.style.pointerEvents = 'auto';
+            btn.classList.remove('disabled');
+        } else {
+            console.warn("Found branch PDF button without data-branch attribute:", btn);
+        }
     });
+
+    // Update the "Download PDF" link inside the View List modal
+    const modalPdfLink = document.getElementById('downloadCurrentPdf');
+    if (modalPdfLink) {
+        modalPdfLink.href = `/download_pdf/${currentEventId}/${currentBranchFilter || 'ALL'}`;
+        modalPdfLink.style.opacity = '1';
+        modalPdfLink.style.pointerEvents = 'auto';
+    }
 }
 
 // Event Creation

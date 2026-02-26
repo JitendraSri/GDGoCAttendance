@@ -60,41 +60,43 @@
                 </div>
             </div>
 
+            <div id="deleteResult" class="scan-result"></div>
 
-        </div>
-
-        <div id="deleteResult" class="scan-result"></div>
-        </div>
-        </div>
-
-        <div class="downloads-section">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                <h2 style="margin: 0;">Reports & Lists</h2>
-                <div style="display: flex; gap: 10px;">
-                    <a id="downloadPdfLink" href="#" class="btn-primary"
-                        style="background-color: #4285F4; text-decoration: none; display: flex; align-items: center; justify-content: center;">Download
-                        Full PDF</a>
-                    <a id="downloadExcelLink" href="#" class="btn-primary"
-                        style="background-color: #0F9D58; text-decoration: none; display: flex; align-items: center; justify-content: center;">Download
-                        Excel</a>
-                    <button onclick="openViewListModal()" class="btn-primary" style="background-color: #202124;">View
-                        List</button>
+            <div class="downloads-section">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h2 style="margin: 0;">{% if session.get('username') == 'GDGADMIN' %}Reports & Lists{% else
+                        %}Attendees
+                        List{% endif %}</h2>
+                    <div style="display: flex; gap: 10px;">
+                        {% if session.get('username') == 'GDGADMIN' %}
+                        <a id="downloadPdfLink" href="#" class="btn-primary"
+                            style="background-color: #4285F4; text-decoration: none; display: flex; align-items: center; justify-content: center;">Download
+                            Full PDF</a>
+                        <a id="downloadExcelLink" href="#" class="btn-primary"
+                            style="background-color: #0F9D58; text-decoration: none; display: flex; align-items: center; justify-content: center;">Download
+                            Excel</a>
+                        {% endif %}
+                        <button onclick="openViewListModal()" class="btn-primary"
+                            style="background-color: #202124;">View
+                            List</button>
+                    </div>
                 </div>
-            </div>
 
-            <div class="buttons-grid" id="pdfButtonsGrid">
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="EEE">EEE</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="MECH">MECH</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="CSE">CSE</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="ECE">ECE</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="ECT">ECT</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="CAI">CAI</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="AIML">AIML</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="CSD">CSD</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="CIVIL">CIVIL</a>
-                <a href="#" class="btn-outline branch-pdf-btn" data-branch="CST">CST</a>
+                {% if session.get('username') == 'GDGADMIN' %}
+                <div class="buttons-grid" id="pdfButtonsGrid">
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="EEE">EEE</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="MECH">MECH</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="CSE">CSE</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="ECE">ECE</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="ECT">ECT</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="CAI">CAI</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="AIML">AIML</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="CSD">CSD</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="CIVIL">CIVIL</a>
+                    <a href="#" class="btn-outline branch-pdf-btn" data-branch="CST">CST</a>
+                </div>
+                {% endif %}
             </div>
-        </div>
     </main>
 
     <!-- Add Student Modal -->
@@ -132,9 +134,11 @@
                 <button class="tab-btn" onclick="filterList('CST')">CST</button>
             </div>
 
+            {% if session.get('username') == 'GDGADMIN' %}
             <div style="text-align: right; margin-bottom: 0.5rem;">
                 <a id="downloadCurrentPdf" href="#" class="btn-outline" style="font-size: 0.9rem;">Download PDF</a>
             </div>
+            {% endif %}
 
             <div class="table-container">
                 <table id="attendeesTable" style="width: 100%; border-collapse: collapse;">
