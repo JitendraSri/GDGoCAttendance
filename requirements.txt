@@ -6,3 +6,5 @@ reportlab
 dnspython
 pandas
 openpyxl
+gunicorn
+eventlet

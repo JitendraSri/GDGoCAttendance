@@ -13,6 +13,18 @@ from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, 
 from reportlab.lib.styles import getSampleStyleSheet
 import io
 import pandas as pd
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+handler = RotatingFileHandler('app.log', maxBytes=1000000, backupCount=3)
+formatter = logging.Formatter(
+    '[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
+)
+handler.setFormatter(formatter)
+logger.addHandler(handler)
 
 # Load environment variables
 load_dotenv()
@@ -23,13 +35,12 @@ MONGO_URI = os.getenv('MONGO_URI')
 ADMIN_USERNAME = os.getenv('ADMIN_USERNAME', 'GDGADMIN')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'DEPLOYX@2025')
 
-# Connect to MongoDB
-# Connect to MongoDB
-client = MongoClient(MONGO_URI)
+# Connect to MongoDB with connection pooling
+client = MongoClient(MONGO_URI, maxPoolSize=100, retryWrites=True)
 try:
     db = client.get_database()
 except:
-    db = client['attendance_db'] # Fallback if URI doesn't validly specify one
+    db = client['attendance_db']
 students_col = db['students']
 attendance_col = db['attendance']
 events_col = db['events']
@@ -47,8 +58,24 @@ def requires_super_admin(f):
         return f(*args, **kwargs)
     return decorated
 
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the error with traceback
+    import traceback
+    logger.error(f"Unhandled Exception: {str(e)}\n{traceback.format_exc()}")
+    
+    # Return JSON for API routes
+    if request.path.startswith('/api/'):
+        return jsonify({
+            "error": "Internal Server Error",
+            "message": "An unexpected error occurred. Please try again later."
+        }), 500
+    # Return a basic error message for others
+    return render_template('error.html', error=str(e)), 500
+
 # Branch Mapping
 BRANCH_MAP = {
+    '01': 'CIVIL',
     '02': 'EEE',
     '03': 'MECH',
     '04': 'ECE',
@@ -95,16 +122,26 @@ def index():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form.get('username').strip()
-        password = request.form.get('password').strip()
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if not username or not password:
+            return render_template('login.html', error="Please enter both username and password")
+            
+        username = username.strip()
+        password = password.strip()
         
         # Priority: Check database for admins
-        admin = admins_col.find_one({'username': username, 'password': password})
-        if admin:
-            session['logged_in'] = True
-            session['admin_id'] = str(admin['_id'])
-            session['username'] = username
-            return redirect(url_for('dashboard'))
+        try:
+            admin = admins_col.find_one({'username': username, 'password': password})
+            if admin:
+                session['logged_in'] = True
+                session['admin_id'] = str(admin['_id'])
+                session['username'] = username
+                return redirect(url_for('dashboard'))
+        except Exception as e:
+            print(f"Login Database Error: {e}")
+            return render_template('login.html', error="Database connection error. Please try again later.")
                 
         return render_template('login.html', error="Invalid Credentials")
     return render_template('login.html')
@@ -211,8 +248,8 @@ def mark_attendance_api():
         
         return jsonify({'status': 'SUCCESS', 'name': student.get('name'), 'branch': student.get('branch')})
     except Exception as e:
-        print(f"Error in mark_attendance_api: {e}")
-        return jsonify({'error': 'Internal Server Error', 'details': str(e)}), 500
+        logger.error(f"Error in mark_attendance_api for {roll_number}: {e}")
+        return jsonify({'error': 'Internal Server Error', 'details': "Could not record attendance"}), 500
 
 @app.route('/api/events', methods=['GET', 'POST'])
 def events_api():
@@ -355,27 +392,31 @@ def add_student_api():
     
     if not roll_number or not name or not event_id:
         return jsonify({'error': 'Roll number, Name and Event ID required'}), 400
-    # Insert to students with normalization
-    branch = normalize_branch(detect_branch(roll_number))
-    students_col.update_one(
-        {'rollNumber': roll_number, 'eventId': event_id},
-        {'$set': {'name': name, 'branch': branch}},
-        upsert=True
-    )
-    
-    # Automatically mark attendance
-    today = get_today_str()
-    attendance_record = {
-        'rollNumber': roll_number,
-        'name': name,
-        'branch': normalize_branch(branch),
-        'date': today,
-        'eventId': event_id,
-        'timestamp': datetime.now()
-    }
-    attendance_col.insert_one(attendance_record)
-    emit_counts(event_id)
-    return jsonify({'status': 'SUCCESS', 'message': 'Student added and attendance marked'})
+    try:
+        # Insert to students with normalization
+        branch = normalize_branch(detect_branch(roll_number))
+        students_col.update_one(
+            {'rollNumber': roll_number, 'eventId': event_id},
+            {'$set': {'name': name, 'branch': branch}},
+            upsert=True
+        )
+        
+        # Automatically mark attendance
+        today = get_today_str()
+        attendance_record = {
+            'rollNumber': roll_number,
+            'name': name,
+            'branch': normalize_branch(branch),
+            'date': today,
+            'eventId': event_id,
+            'timestamp': datetime.now()
+        }
+        attendance_col.insert_one(attendance_record)
+        emit_counts(event_id)
+        return jsonify({'status': 'SUCCESS', 'message': 'Student added and attendance marked'})
+    except Exception as e:
+        logger.error(f"Error in add_student_api for {roll_number}: {e}")
+        return jsonify({'error': 'Internal Server Error', 'details': "Could not add student"}), 500
 
 @app.route('/api/delete_student', methods=['POST'])
 def delete_student_api():
@@ -461,19 +502,29 @@ def on_join(data):
         # print(f"Client joined room: {event_id}")
 
 def emit_counts(event_id):
-    total = attendance_col.count_documents({'eventId': event_id})
-    pipeline = [
-        {'$match': {'eventId': event_id}},
-        {'$group': {'_id': '$branch', 'count': {'$sum': 1}}}
-    ]
-    branch_counts = {item['_id']: item['count'] for item in attendance_col.aggregate(pipeline)}
-    for dept in BRANCH_MAP.values():
-        if dept not in branch_counts:
-            branch_counts[dept] = 0
-            
-    total_students = students_col.count_documents({'eventId': event_id})
     try:
-        # Emit ONLY to the specific event room
+        # Use aggregation for efficiency
+        pipeline = [
+            {'$match': {'eventId': event_id}},
+            {'$facet': {
+                'total': [{'$count': 'count'}],
+                'by_branch': [
+                    {'$group': {'_id': '$branch', 'count': {'$sum': 1}}}
+                ]
+            }}
+        ]
+        results = list(attendance_col.aggregate(pipeline))[0]
+        
+        total = results['total'][0]['count'] if results['total'] else 0
+        branch_counts = {item['_id']: item['count'] for item in results['by_branch']}
+        
+        # Ensure all branches are present
+        for dept in BRANCH_MAP.values():
+            if dept not in branch_counts:
+                branch_counts[dept] = 0
+                
+        total_students = students_col.count_documents({'eventId': event_id})
+        
         socketio.emit('update_counts', {
             'total': total, 
             'branch_counts': branch_counts,
@@ -481,7 +532,7 @@ def emit_counts(event_id):
             'event_id': event_id
         }, to=event_id)
     except Exception as e:
-        print(f"ERROR: emit_counts failed: {e}")
+        logger.error(f"ERROR: emit_counts failed for event {event_id}: {e}")
 
 
 @app.route('/download_pdf/<event_id>/<department>')
@@ -592,19 +643,8 @@ def download_full_excel(event_id):
 if __name__ == '__main__':
     # Ensure indexes
     try:
-        # Drop old single-field unique indexes if they exist
-        try:
-            students_col.drop_index("rollNumber_1")
-            print("Dropped old rollNumber index from students")
-        except:
-            pass
-            
-        try:
-            attendance_col.drop_index("rollNumber_1")
-            print("Dropped old rollNumber index from attendance")
-        except:
-            pass
-
+        # Try to ensure indexes without dropping if they exist
+        # This is safer for production and avoids downtime
         attendance_col.create_index([('rollNumber', 1), ('eventId', 1)], unique=True)
         attendance_col.create_index('eventId')
         attendance_col.create_index('branch')
@@ -618,12 +658,22 @@ if __name__ == '__main__':
             {'$set': {'username': 'GDGADMIN', 'password': 'COREADMIN#3'}},
             upsert=True
         )
-        # GDGMEMBER (Attendance Only)
-        admins_col.update_one(
-            {'username': 'GDGMEMBER'},
-            {'$set': {'username': 'GDGMEMBER', 'password': 'CORETEAM#3'}},
-            upsert=True
-        )
+        # Batch add GDGMEMBER1 to GDGMEMBER40
+        print("Ensuring batch member accounts (1-40)...")
+        from pymongo import UpdateOne
+        bulk_ops = []
+        for i in range(1, 41):
+            u = f"GDGMEMBER{i}"
+            p = f"COREMEMBER#{i}"
+            bulk_ops.append(UpdateOne(
+                {'username': u},
+                {'$set': {'username': u, 'password': p}},
+                upsert=True
+            ))
+        
+        if bulk_ops:
+            res = admins_col.bulk_write(bulk_ops)
+            print(f"Batch admins ensured: {res.upserted_count + res.matched_count} total.")
         # Merging AIM and AIML into AIML (Normalization)
         print("Ensuring branch normalization (AIM -> AIML)...")
         res1 = students_col.update_many({'branch': 'AIM'}, {'$set': {'branch': 'AIML'}})
