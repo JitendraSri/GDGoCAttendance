@@ -3,6 +3,7 @@ import re
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
 from flask_socketio import SocketIO, emit
+from werkzeug.exceptions import HTTPException
 from pymongo import MongoClient
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -61,6 +62,10 @@ def requires_super_admin(f):
 
 @app.errorhandler(Exception)
 def handle_exception(e):
+    # Pass through HTTP exceptions (like 404) to their specific handlers
+    if isinstance(e, HTTPException):
+        return e
+
     # Log the error with traceback
     import traceback
     logger.error(f"Unhandled Exception: {str(e)}\n{traceback.format_exc()}")
@@ -105,6 +110,10 @@ def normalize_branch(branch):
     b = str(branch).strip().upper()
     if b in ('AIM', 'AIML'):
         return 'AIML'
+    if b == 'ME':
+        return 'MECH'
+    if b == 'CE':
+        return 'CIVIL'
     return b
 
 def clean_roll_number(roll):
@@ -260,6 +269,9 @@ def mark_attendance_api():
         
         return jsonify({'status': 'SUCCESS', 'name': student.get('name'), 'branch': student.get('branch')})
     except Exception as e:
+        # Check for duplicate key error from MongoDB if race condition occurs
+        if 'duplicate key error' in str(e).lower():
+            return jsonify({'error': 'Duplicate attendance', 'already_marked': True}), 409
         logger.error(f"Error in mark_attendance_api for {roll_number}: {e}")
         return jsonify({'error': 'Internal Server Error', 'details': "Could not record attendance"}), 500
 
@@ -576,11 +588,18 @@ def download_pdf(event_id, department):
         # Title
         title_style = styles['Title']
         title_style.leading = 24
+        title_style.alignment = 1 # TA_CENTER
         
         # Escape event name for Paragraph
         safe_event_name = html.escape(event['name'])
-        # Use proper self-closing tags and ensure no accidental content
-        header_text = f"<para align='center'>ATTENDANCE FOR THE<br/>{safe_event_name}<br/>INITIATED BY<br/>SRI VASAVI ENGINEERING COLLEGE<br/>(AUTONOMOUS)</para>"
+        # Use proper tags and ensure no accidental content inside br
+        header_text = (
+            "ATTENDANCE FOR THE<br/>"
+            f"{safe_event_name}<br/>"
+            "INITIATED BY<br/>"
+            "SRI VASAVI ENGINEERING COLLEGE<br/>"
+            "(AUTONOMOUS)"
+        )
         
         logger.info(f"Generating PDF for event: {event['name']} ({event_id}), dept: {department}")
         elements.append(Paragraph(header_text, title_style))
@@ -707,6 +726,20 @@ if __name__ == '__main__':
         res2 = attendance_col.update_many({'branch': 'AIM'}, {'$set': {'branch': 'AIML'}})
         if res1.modified_count > 0 or res2.modified_count > 0:
             print(f"Normalized {res1.modified_count} students and {res2.modified_count} attendance records.")
+        
+        # Merging ME into MECH (Normalization)
+        print("Ensuring branch normalization (ME -> MECH)...")
+        res3 = students_col.update_many({'branch': 'ME'}, {'$set': {'branch': 'MECH'}})
+        res4 = attendance_col.update_many({'branch': 'ME'}, {'$set': {'branch': 'MECH'}})
+        if res3.modified_count > 0 or res4.modified_count > 0:
+            print(f"Normalized {res3.modified_count} students and {res4.modified_count} attendance records.")
+        
+        # Merging CE into CIVIL (Normalization)
+        print("Ensuring branch normalization (CE -> CIVIL)...")
+        res5 = students_col.update_many({'branch': 'CE'}, {'$set': {'branch': 'CIVIL'}})
+        res6 = attendance_col.update_many({'branch': 'CE'}, {'$set': {'branch': 'CIVIL'}})
+        if res5.modified_count > 0 or res6.modified_count > 0:
+            print(f"Normalized {res5.modified_count} students and {res6.modified_count} attendance records.")
         
         print("Default Admins ensured.")
         
