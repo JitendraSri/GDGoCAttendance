@@ -682,7 +682,7 @@ def download_pdf(event_id, department):
             "ATTENDANCE FOR THE<br/>"
             f"{safe_event_name}<br/>"
             " BY<br/>"
-            "Google Developer Group On Campus Sri Vasavi Engineering College.<br/>"
+            "GDGoc SVEC X AIKYAM<br/>"
         )
         
         logger.info(f"Generating PDF for event: {event['name']} ({event_id}), dept: {department}")
