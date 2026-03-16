@@ -1,0 +1,10 @@
+Flask
+Flask-SocketIO
+pymongo
+python-dotenv
+reportlab
+dnspython
+pandas
+openpyxl
+gunicorn
+eventlet
